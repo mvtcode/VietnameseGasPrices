@@ -1,0 +1,40 @@
+{
+  "name": "VietnameseGasPrices",
+  "version": "1.0.0",
+  "description": "Thu vien cap nhat gia gas (LPG) ban le tai Viet Nam (Hai Phong, Ha Noi, Da Nang, TP.HCM, Can Tho) cho ESP32 va Arduino.",
+  "keywords": [
+    "vietnam",
+    "gas",
+    "lpg",
+    "petrolimex",
+    "gia-gas",
+    "hai-phong",
+    "ha-noi",
+    "esp32",
+    "arduino"
+  ],
+  "authors": [
+    {
+      "name": "mvtcode",
+      "url": "https://github.com/mvtcode"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mvtcode/VietnameseGasPrices.git"
+  },
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^7.0.0"
+  },
+  "export": {
+    "include": [
+      "src/*",
+      "library.json",
+      "library.properties",
+      "README.md"
+    ]
+  }
+}
