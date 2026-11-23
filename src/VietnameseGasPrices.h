@@ -49,7 +49,7 @@ private:
     static void fetchGasTask(void *param);
 
 public:
-    static void init(const char *defaultCity = "Hải Phòng", const char *endpoint = "https://gas-prices.zaitan.workers.dev/");
+    static void init(const char *defaultCity = "Hải Phòng", const char *endpoint = "http://gas-prices.zaitan.workers.dev/");
     static void setTargetCity(const char *cityName);
     static void setApiUrl(const char *url);
     static void setUpdateInterval(uint32_t intervalMinutes);

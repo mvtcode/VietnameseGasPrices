@@ -20,7 +20,7 @@ uint32_t VietnameseGasPrices::last_fetch_time = 0;
 bool VietnameseGasPrices::is_fetching = false;
 uint32_t VietnameseGasPrices::update_interval_ms = 60 * 60 * 1000; // Mặc định 60 phút
 char VietnameseGasPrices::target_city[32] = "Hải Phòng";
-char VietnameseGasPrices::api_url[128] = "https://gas-prices.zaitan.workers.dev/";
+char VietnameseGasPrices::api_url[128] = "http://gas-prices.zaitan.workers.dev/";
 
 static bool parseGasPayload(const String &payload, GasPriceInfo &outInfo) {
     if (payload.length() == 0) return false;
@@ -82,39 +82,64 @@ static bool parseGasPayload(const String &payload, GasPriceInfo &outInfo) {
 }
 
 static bool executeFetch(const char *url, GasPriceInfo &resultInfo) {
-    uint32_t maxAlloc = ESP.getMaxAllocHeap();
+    if (!url || strlen(url) == 0) return false;
+
     String payload = "";
     bool fetchSuccess = false;
-
-    // Kiểm tra heap an toàn trước khi dùng TLS (tối thiểu 25KB heap liên tục)
-    const bool canUseTLS = (maxAlloc >= 25 * 1024);
-    if (!canUseTLS) {
-        VGP_LOG_W("Heap too fragmented for TLS: maxAlloc=%d", maxAlloc);
-        return false;
-    }
-
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(8000);
+    bool isHttps = (strncmp(url, "https://", 8) == 0);
 
     HTTPClient http;
-    http.setTimeout(8000);
+    http.setTimeout(20000);
+    http.setConnectTimeout(20000);
     http.setUserAgent("ESP32-VietnameseGasPrices/1.0");
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    VGP_LOG_I("Fetching gas prices from: %s", url);
-    if (http.begin(client, url)) {
-        int httpCode = http.GET();
-        if (httpCode == HTTP_CODE_OK) {
-            payload = http.getString();
-            fetchSuccess = true;
-            VGP_LOG_I("Gas fetch OK, size: %d bytes", payload.length());
-        } else {
-            VGP_LOG_W("HTTP Error: %d", httpCode);
+    if (isHttps) {
+        uint32_t maxAlloc = ESP.getMaxAllocHeap();
+        if (maxAlloc < 15 * 1024) {
+            VGP_LOG_W("Heap too fragmented for TLS: maxAlloc=%d", maxAlloc);
+            return false;
         }
-        http.end();
+
+        WiFiClientSecure client;
+        client.setInsecure();
+        client.setTimeout(15);
+        static const char *alpn[] = {"http/1.1", NULL};
+        client.setAlpnProtocols(alpn);
+
+        VGP_LOG_I("Fetching gas prices (HTTPS) from: %s", url);
+        if (http.begin(client, url)) {
+            int httpCode = http.GET();
+            if (httpCode == HTTP_CODE_OK) {
+                payload = http.getString();
+                fetchSuccess = true;
+                VGP_LOG_I("Gas fetch OK, size: %d bytes", payload.length());
+            } else {
+                char errBuf[128] = {0};
+                client.lastError(errBuf, sizeof(errBuf));
+                VGP_LOG_W("HTTP Error: %d, TLS error: %s", httpCode, errBuf);
+            }
+            http.end();
+        }
+        client.stop();
+    } else {
+        WiFiClient client;
+        client.setTimeout(15);
+
+        VGP_LOG_I("Fetching gas prices (HTTP) from: %s", url);
+        if (http.begin(client, url)) {
+            int httpCode = http.GET();
+            if (httpCode == HTTP_CODE_OK) {
+                payload = http.getString();
+                fetchSuccess = true;
+                VGP_LOG_I("Gas fetch OK, size: %d bytes", payload.length());
+            } else {
+                VGP_LOG_W("HTTP Error: %d", httpCode);
+            }
+            http.end();
+        }
+        client.stop();
     }
-    client.stop();
 
     if (fetchSuccess && payload.length() > 0) {
         return parseGasPayload(payload, resultInfo);
@@ -192,7 +217,7 @@ void VietnameseGasPrices::update(bool wifiConnected, bool force, uint32_t interv
         BaseType_t res = xTaskCreatePinnedToCore(
             fetchGasTask,
             "VnGasTask",
-            8 * 1024,
+            6 * 1024,
             NULL,
             1,
             NULL,
