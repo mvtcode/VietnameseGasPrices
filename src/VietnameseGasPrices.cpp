@@ -20,61 +20,98 @@ uint32_t VietnameseGasPrices::last_fetch_time = 0;
 bool VietnameseGasPrices::is_fetching = false;
 uint32_t VietnameseGasPrices::update_interval_ms = 60 * 60 * 1000; // Mặc định 60 phút
 char VietnameseGasPrices::target_city[32] = "Hải Phòng";
-char VietnameseGasPrices::api_url[128] = "http://gas-prices.zaitan.workers.dev/";
+char VietnameseGasPrices::api_url[128] = "https://gas-prices.zaitan.workers.dev/";
+
+static String extractJsonString(const String &json, int startPos, const char *key) {
+    String searchKey = "\"" + String(key) + "\":";
+    int keyIdx = json.indexOf(searchKey, startPos);
+    if (keyIdx == -1) return "";
+
+    int startQuote = json.indexOf('"', keyIdx + searchKey.length());
+    if (startQuote == -1) return "";
+
+    int endQuote = json.indexOf('"', startQuote + 1);
+    if (endQuote == -1) return "";
+
+    return json.substring(startQuote + 1, endQuote);
+}
+
+static int extractJsonInt(const String &json, int startPos, const char *key) {
+    String searchKey = "\"" + String(key) + "\":";
+    int keyIdx = json.indexOf(searchKey, startPos);
+    if (keyIdx == -1) return 0;
+
+    int valStart = keyIdx + searchKey.length();
+    while (valStart < (int)json.length() && (json[valStart] == ' ' || json[valStart] == '\t')) {
+        valStart++;
+    }
+
+    int valEnd = valStart;
+    while (valEnd < (int)json.length() && (isdigit(json[valEnd]) || json[valEnd] == '-')) {
+        valEnd++;
+    }
+
+    if (valStart < valEnd) {
+        return json.substring(valStart, valEnd).toInt();
+    }
+    return 0;
+}
 
 static bool parseGasPayload(const String &payload, GasPriceInfo &outInfo) {
     if (payload.length() == 0) return false;
 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) {
-        VGP_LOG_E("deserializeJson() failed: %s", error.c_str());
-        return false;
+    String period = extractJsonString(payload, 0, "period");
+    if (period.length() > 0) {
+        strncpy(outInfo.period, period.c_str(), sizeof(outInfo.period) - 1);
+        outInfo.period[sizeof(outInfo.period) - 1] = '\0';
     }
 
-    const char *p = doc["period"] | "";
-    strncpy(outInfo.period, p, sizeof(outInfo.period) - 1);
+    String cacheMode = extractJsonString(payload, 0, "cache_mode");
+    if (cacheMode.length() > 0) {
+        strncpy(outInfo.cache_mode, cacheMode.c_str(), sizeof(outInfo.cache_mode) - 1);
+        outInfo.cache_mode[sizeof(outInfo.cache_mode) - 1] = '\0';
+    }
 
-    const char *cm = doc["cache_mode"] | "";
-    strncpy(outInfo.cache_mode, cm, sizeof(outInfo.cache_mode) - 1);
-
-    JsonArray dataArray = doc["data"].as<JsonArray>();
     outInfo.city_count = 0;
-
-    for (JsonObject item : dataArray) {
+    const char *cities[] = {"Hà Nội", "Hải Phòng", "Đà Nẵng", "Hồ Chí Minh", "Cần Thơ"};
+    for (size_t i = 0; i < sizeof(cities) / sizeof(cities[0]); i++) {
         if (outInfo.city_count >= MAX_GAS_CITIES) break;
+        const char *cityName = cities[i];
+        String cityKey = "\"" + String(cityName) + "\"";
+        int cityIdx = payload.indexOf(cityKey);
+        if (cityIdx != -1) {
+            int p12 = extractJsonInt(payload, cityIdx, "price_12kg");
+            int p48 = extractJsonInt(payload, cityIdx, "price_48kg");
+            int dispK = extractJsonInt(payload, cityIdx, "display_12kg_k");
+            if (dispK == 0 && p12 > 0) dispK = (p12 + 500) / 1000;
 
-        const char *city = item["city"] | "";
-        int p12 = item["price_12kg"] | 0;
-        int p48 = item["price_48kg"] | 0;
-        int dispK = item["display_12kg_k"] | 0;
+            if (p12 > 0) {
+                GasCityPrice &g = outInfo.cities[outInfo.city_count];
+                strncpy(g.city, cityName, sizeof(g.city) - 1);
+                g.city[sizeof(g.city) - 1] = '\0';
+                g.price_12kg = p12;
+                g.price_48kg = p48;
+                g.display_12kg_k = dispK;
 
-        if (strlen(city) > 0 && p12 > 0) {
-            GasCityPrice &g = outInfo.cities[outInfo.city_count];
-            strncpy(g.city, city, sizeof(g.city) - 1);
-            g.price_12kg = p12;
-            g.price_48kg = p48;
-            g.display_12kg_k = (dispK > 0) ? dispK : (int)((p12 + 500) / 1000);
+                if (strstr(cityName, "Hải Phòng") != NULL) {
+                    outInfo.hp_12kg_price = p12;
+                    outInfo.hp_12kg_k = dispK;
+                } else if (strstr(cityName, "Hà Nội") != NULL) {
+                    outInfo.hn_12kg_price = p12;
+                    outInfo.hn_12kg_k = dispK;
+                } else if (strstr(cityName, "Đà Nẵng") != NULL) {
+                    outInfo.dn_12kg_price = p12;
+                    outInfo.dn_12kg_k = dispK;
+                } else if (strstr(cityName, "Hồ Chí Minh") != NULL) {
+                    outInfo.hcm_12kg_price = p12;
+                    outInfo.hcm_12kg_k = dispK;
+                } else if (strstr(cityName, "Cần Thơ") != NULL) {
+                    outInfo.ct_12kg_price = p12;
+                    outInfo.ct_12kg_k = dispK;
+                }
 
-            // Gán nhanh các thành phố chính
-            if (strstr(city, "Hải Phòng") != NULL || strstr(city, "Hai Phong") != NULL) {
-                outInfo.hp_12kg_price = p12;
-                outInfo.hp_12kg_k = g.display_12kg_k;
-            } else if (strstr(city, "Hà Nội") != NULL || strstr(city, "Ha Noi") != NULL) {
-                outInfo.hn_12kg_price = p12;
-                outInfo.hn_12kg_k = g.display_12kg_k;
-            } else if (strstr(city, "Đà Nẵng") != NULL || strstr(city, "Da Nang") != NULL) {
-                outInfo.dn_12kg_price = p12;
-                outInfo.dn_12kg_k = g.display_12kg_k;
-            } else if (strstr(city, "Hồ Chí Minh") != NULL || strstr(city, "Ho Chi Minh") != NULL || strstr(city, "Sài Gòn") != NULL) {
-                outInfo.hcm_12kg_price = p12;
-                outInfo.hcm_12kg_k = g.display_12kg_k;
-            } else if (strstr(city, "Cần Thơ") != NULL || strstr(city, "Can Tho") != NULL) {
-                outInfo.ct_12kg_price = p12;
-                outInfo.ct_12kg_k = g.display_12kg_k;
+                outInfo.city_count++;
             }
-
-            outInfo.city_count++;
         }
     }
 
@@ -89,9 +126,9 @@ static bool executeFetch(const char *url, GasPriceInfo &resultInfo) {
     bool isHttps = (strncmp(url, "https://", 8) == 0);
 
     HTTPClient http;
-    http.setTimeout(20000);
-    http.setConnectTimeout(20000);
-    http.setUserAgent("ESP32-VietnameseGasPrices/1.0");
+    http.setTimeout(15000);
+    http.setConnectTimeout(15000);
+    http.setUserAgent("ESP32-CYD-Updater");
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
     if (isHttps) {
@@ -103,9 +140,7 @@ static bool executeFetch(const char *url, GasPriceInfo &resultInfo) {
 
         WiFiClientSecure client;
         client.setInsecure();
-        client.setTimeout(15);
-        static const char *alpn[] = {"http/1.1", NULL};
-        client.setAlpnProtocols(alpn);
+        client.setTimeout(15000);
 
         VGP_LOG_I("Fetching gas prices (HTTPS) from: %s", url);
         if (http.begin(client, url)) {
@@ -124,7 +159,7 @@ static bool executeFetch(const char *url, GasPriceInfo &resultInfo) {
         client.stop();
     } else {
         WiFiClient client;
-        client.setTimeout(15);
+        client.setTimeout(15000);
 
         VGP_LOG_I("Fetching gas prices (HTTP) from: %s", url);
         if (http.begin(client, url)) {
@@ -185,17 +220,20 @@ void VietnameseGasPrices::setUpdateInterval(uint32_t intervalMinutes) {
 }
 
 void VietnameseGasPrices::fetchGasTask(void *param) {
-    GasPriceInfo info;
-    if (executeFetch(api_url, info)) {
-        if (gasMutex != NULL && xSemaphoreTake(gasMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-            info.is_valid = true;
-            info.last_update_time = millis();
-            current_gas = info;
-            xSemaphoreGive(gasMutex);
-            VGP_LOG_I("Gas prices updated successfully!");
+    GasPriceInfo *info = new GasPriceInfo();
+    if (info) {
+        if (executeFetch(api_url, *info)) {
+            if (gasMutex != NULL && xSemaphoreTake(gasMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+                info->is_valid = true;
+                info->last_update_time = millis();
+                current_gas = *info;
+                xSemaphoreGive(gasMutex);
+                VGP_LOG_I("Gas prices updated successfully!");
+            }
+        } else {
+            VGP_LOG_W("Fetch gas prices failed");
         }
-    } else {
-        VGP_LOG_W("Fetch gas prices failed");
+        delete info;
     }
     is_fetching = false;
     vTaskDelete(NULL);
@@ -217,7 +255,7 @@ void VietnameseGasPrices::update(bool wifiConnected, bool force, uint32_t interv
         BaseType_t res = xTaskCreatePinnedToCore(
             fetchGasTask,
             "VnGasTask",
-            6 * 1024,
+            8 * 1024,
             NULL,
             1,
             NULL,
